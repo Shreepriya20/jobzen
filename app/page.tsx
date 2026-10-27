@@ -48,6 +48,7 @@ type LiveJob = {
   source: string;
   match_score: number;
   matched_skills: string[];
+  missing_skills?: string[];
 };
 type Profile = {
   full_name: string;
@@ -164,6 +165,10 @@ const [matchError, setMatchError] = useState("");
   const [liveSuccess, setLiveSuccess] = useState("");
   const [liveSearched, setLiveSearched] = useState(false);
   const [savingLiveJob, setSavingLiveJob] = useState<string | null>(null);
+  const [resumeMatchingJobs, setResumeMatchingJobs] = useState<LiveJob[]>([]);
+const [resumeJobsLoading, setResumeJobsLoading] = useState(false);
+const [resumeJobsError, setResumeJobsError] = useState("");
+const [resumeJobsSearched, setResumeJobsSearched] = useState(false);
 
   const [profile, setProfile] = useState<Profile>(EMPTY_PROFILE);
   const [resume, setResume] = useState<Resume | null>(null);
@@ -465,6 +470,119 @@ async function analyzeResumeMatch(event: React.FormEvent<HTMLFormElement>) {
   }
 }
 
+
+async function findResumeMatchingJobs() {
+  if (!resume?.extracted_text?.trim()) {
+    setResumeJobsError("Upload a readable resume first.");
+    setResumeJobsSearched(true);
+    return;
+  }
+
+  setResumeJobsLoading(true);
+  setResumeJobsError("");
+  setResumeJobsSearched(true);
+  setResumeMatchingJobs([]);
+
+  try {
+    const params = new URLSearchParams({
+      query: liveQuery.trim().length >= 2
+        ? liveQuery.trim()
+        : "software engineer",
+      country: liveCountry,
+    });
+
+    const response = await fetch(
+      `${API}/jobs/search?${params.toString()}`
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to find matching jobs.");
+    }
+
+    const resumeText = resume.extracted_text.toLowerCase();
+
+    // Identify skills actually mentioned in the uploaded resume.
+    const skillVocabulary = [
+      "python", "java", "javascript", "typescript", "sql",
+      "html", "css", "react", "next.js", "node.js",
+      "fastapi", "spring boot", "django", "flask",
+      "machine learning", "deep learning", "artificial intelligence",
+      "generative ai", "llm", "nlp", "langchain",
+      "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
+      "data analysis", "data science", "rest api", "microservices",
+      "aws", "azure", "gcp", "docker", "kubernetes",
+      "jenkins", "git", "github", "mongodb", "mysql", "postgresql",
+      "redis", "linux", "c++", "c#", "go", "rust",
+      "fastapi", "backend", "frontend", "full stack",
+      "object oriented programming", "data structures",
+      "algorithms", "cybersecurity", "networking",
+      "devops", "automation", "testing", "agile"
+    ];
+
+    const resumeSkills = skillVocabulary.filter((skill) =>
+      resumeText.includes(skill)
+    );
+
+    const jobs: LiveJob[] = (data.jobs || []).map(
+      (job: LiveJob) => {
+        const jobText =
+          `${job.title} ${job.description}`.toLowerCase();
+
+        const jobSkills = skillVocabulary.filter((skill) =>
+          jobText.includes(skill)
+        );
+
+        const matchedSkills = resumeSkills.filter((skill) =>
+          jobSkills.includes(skill)
+        );
+
+        const missingSkills = jobSkills.filter(
+          (skill) => !resumeSkills.includes(skill)
+        );
+
+        // Score only against skills found in the job description.
+        const score = jobSkills.length
+          ? Math.round(
+              (matchedSkills.length / jobSkills.length) * 100
+            )
+          : 0;
+
+        return {
+          ...job,
+          match_score: score,
+          matched_skills: matchedSkills,
+          // Extra UI data is attached below through a safe type extension.
+          missing_skills: missingSkills,
+        } as LiveJob & { missing_skills: string[] };
+      }
+    );
+
+    jobs.sort((a, b) => b.match_score - a.match_score);
+
+    setResumeMatchingJobs(jobs);
+
+    if (!jobs.length) {
+      setResumeJobsError(
+        "No jobs were returned. Try another job title or country."
+      );
+    } else if (!resumeSkills.length) {
+      setResumeJobsError(
+        "Jobs were found, but no recognized skills were detected in your resume. The scores may not be meaningful."
+      );
+    }
+  } catch (error) {
+    setResumeMatchingJobs([]);
+    setResumeJobsError(
+      error instanceof Error
+        ? error.message
+        : "Could not find matching jobs. Check that the backend is running."
+    );
+  } finally {
+    setResumeJobsLoading(false);
+  }
+}
 
 async function saveLiveJob(job: LiveJob) {
   if (!job.url) {
@@ -1258,70 +1376,250 @@ const pageDescription: Record<string, string> = {
                 </div>
               </div>
             )}
+            
+{active === "Resume studio" && (
+  <div className="max-w-5xl space-y-5">
+    <div className={cardClass}>
+      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 text-2xl text-violet-700">
+        ▧
+      </div>
 
-            {active === "Resume studio" && (
-              <div className="max-w-4xl space-y-5">
-                <div className={cardClass}>
-                  <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 text-2xl text-violet-700">
-                    ▧
-                  </div>
-                  <h2 className="text-lg font-semibold">Resume studio</h2>
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Upload a PDF or DOCX file to extract readable text. This feature does not yet rewrite your resume or send it to an AI provider.
-                  </p>
-                  <form onSubmit={uploadResume} className="mt-5 rounded-xl border-2 border-dashed border-slate-200 p-5 sm:p-7">
-                    <label className={labelClass}>
-                      Resume file (PDF or DOCX, maximum 5 MB)
-                      <input
-                        key={resume?.id ?? "resume-input"}
-                        type="file"
-                        name="resume"
-                        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        className="mt-3 block w-full cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-violet-50 file:px-4 file:py-2 file:font-medium file:text-violet-700"
-                      />
-                    </label>
-                    <button type="submit" disabled={uploadingResume} className="mt-4 rounded-xl bg-[#17172B] px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-50">
-                      {uploadingResume ? "Uploading…" : "Upload and extract text"}
-                    </button>
-                  </form>
-          
-                </div>
+      <h2 className="text-lg font-semibold">Resume Studio</h2>
 
-                {resume ? (
-                  <div className={cardClass}>
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h2 className="font-semibold">Your uploaded resume</h2>
-                        <p className="mt-1 break-all text-sm text-slate-500">{resume.filename}</p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {(resume.character_count ?? resume.extracted_text.length).toLocaleString()} extracted characters
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => setResumeVisible((value) => !value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
-                          {resumeVisible ? "Hide text" : "Show text"}
-                        </button>
-                        <button type="button" onClick={() => void copyResumeText()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
-                          Copy text
-                        </button>
-                      </div>
-                    </div>
-                                       {resumeVisible && (
-                      <pre className="mt-5 max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-                        {resume.extracted_text || "No readable text was extracted from this file."}
-                      </pre>
-                    )}
-                  </div>
-                ) : (
-                  <div className={cardClass}>
-                    <EmptyState
-                      title="No resume uploaded"
-                      description="Upload a PDF or DOCX above to inspect the extracted text here."
-                    />
-                  </div>
-                )}
+      <p className="mt-2 text-sm leading-6 text-slate-500">
+        Upload your resume and discover real job listings ranked by
+        skill overlap. Your extracted resume text stays hidden.
+      </p>
+
+      <form
+        onSubmit={uploadResume}
+        className="mt-5 rounded-xl border-2 border-dashed border-slate-200 p-5 sm:p-7"
+      >
+        <label className={labelClass}>
+          Resume file (PDF or DOCX, maximum 5 MB)
+          <input
+            key={resume?.id ?? "resume-input"}
+            type="file"
+            name="resume"
+            accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            className="mt-3 block w-full cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-violet-50 file:px-4 file:py-2 file:font-medium file:text-violet-700"
+          />
+        </label>
+
+        <button
+          type="submit"
+          disabled={uploadingResume}
+          className="mt-4 rounded-xl bg-[#17172B] px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
+        >
+          {uploadingResume ? "Uploading..." : "Upload resume"}
+        </button>
+      </form>
+    </div>
+
+    {resume ? (
+      <div className={cardClass}>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="font-semibold">Your uploaded resume</h2>
+            <p className="mt-1 break-all text-sm text-slate-500">
+              {resume.filename}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              {(resume.character_count ?? resume.extracted_text.length).toLocaleString()} characters processed
+            </p>
+          </div>
+
+          <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+            Resume ready
+          </span>
+        </div>
+
+        <div className="mt-5 rounded-xl bg-violet-50 p-4">
+          <h3 className="font-semibold text-violet-950">
+            Find jobs for your resume
+          </h3>
+          <p className="mt-1 text-sm leading-6 text-violet-800">
+            Search settings are reused from Find Jobs:{" "}
+            <strong>{liveQuery}</strong> in{" "}
+            <strong>{liveCountry || "all locations"}</strong>.
+            You can change them on the Find Jobs page.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => void findResumeMatchingJobs()}
+            disabled={resumeJobsLoading}
+            className="mt-4 rounded-xl bg-[#17172B] px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {resumeJobsLoading
+              ? "Finding matching jobs..."
+              : "Find Matching Jobs"}
+          </button>
+        </div>
+
+        {resumeJobsError && (
+          <p
+            role="alert"
+            className="mt-4 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800"
+          >
+            {resumeJobsError}
+          </p>
+        )}
+
+        {resumeJobsLoading && (
+          <p className="mt-5 text-sm text-slate-500">
+            Searching real listings and comparing their available descriptions with your resume...
+          </p>
+        )}
+
+        {resumeJobsSearched &&
+          !resumeJobsLoading &&
+          resumeMatchingJobs.length > 0 && (
+            <div className="mt-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-lg font-semibold">
+                  Matching opportunities
+                </h3>
+                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-600">
+                  {resumeMatchingJobs.length} jobs · Ranked by score
+                </span>
               </div>
-            )}
+
+              <p className="text-xs leading-5 text-slate-500">
+                Scores represent overlap between recognized resume skills
+                and skills mentioned in each available job description.
+                They are not predictions of hiring success.
+              </p>
+
+              {resumeMatchingJobs.map((job, index) => (
+                <div
+                  key={`${job.id}-${index}`}
+                  className="rounded-xl border border-slate-200 p-4 sm:p-5"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-slate-400">
+                        #{index + 1} · {job.source}
+                      </p>
+                      <h4 className="mt-1 text-base font-semibold text-slate-900">
+                        {job.title}
+                      </h4>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {job.company}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {job.location}
+                        {job.employment_type
+                          ? ` · ${job.employment_type}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <div className="shrink-0 rounded-xl bg-violet-50 px-4 py-3 text-center">
+                      <p className="text-2xl font-bold text-violet-800">
+                        {job.match_score}%
+                      </p>
+                      <p className="text-xs text-violet-700">
+                        Skill overlap
+                      </p>
+                    </div>
+                  </div>
+
+                  {job.description && (
+                    <p className="mt-4 whitespace-pre-line text-sm leading-6 text-slate-600">
+                      {job.description}
+                    </p>
+                  )}
+
+                  <div className="mt-4">
+                    <p className="text-sm font-semibold text-emerald-800">
+                      Matching skills ({job.matched_skills.length})
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {job.matched_skills.length > 0 ? (
+                        job.matched_skills.map((skill) => (
+                          <span
+                            key={skill}
+                            className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800"
+                          >
+                            {skill}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-sm text-slate-500">
+                          No matching skills identified.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <p className="text-sm font-semibold text-amber-800">
+                      Skills mentioned in job but not detected in resume
+                      ({job.missing_skills?.length ?? 0})
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {job.missing_skills?.length ? (
+                        job.missing_skills.map((skill) => (
+                          <span
+                            key={skill}
+                            className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800"
+                          >
+                            {skill}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-sm text-slate-500">
+                          No additional recognized skills identified.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    {job.url && (
+                      <a
+                        href={job.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-xl bg-[#17172B] px-4 py-2.5 text-sm font-medium text-white hover:bg-violet-800"
+                      >
+                        View / Apply
+                      </a>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => void saveLiveJob(job)}
+                      disabled={savingLiveJob === job.id}
+                      className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {savingLiveJob === job.id
+                        ? "Saving..."
+                        : "Save to tracker"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+        {!resumeJobsSearched && (
+          <p className="mt-5 text-sm text-slate-500">
+            Select Find Matching Jobs to see available opportunities ranked against your resume.
+          </p>
+        )}
+      </div>
+    ) : (
+      <div className={cardClass}>
+        <EmptyState
+          title="No resume uploaded"
+          description="Upload a PDF or DOCX above to start finding relevant jobs."
+        />
+      </div>
+    )}
+  </div>
+)}
 
             {active === "Resume Match" && (
               <div className="max-w-5xl space-y-6">
